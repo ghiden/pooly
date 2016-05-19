@@ -74,6 +74,7 @@ defmodule Pooly.PoolServer do
       max_overflow: max_overflow
     } = state
 
+    IO.puts "checkout: from #{inspect(from_pid)}"
     case workers do
       [worker | rest] ->
         IO.puts "checkout: not empty"
@@ -127,16 +128,40 @@ defmodule Pooly.PoolServer do
     end
   end
 
-  def handle_info({:EXIT, pid, _reason}, state = %{monitors: monitors}) do
+  def handle_info({:EXIT, pid, :killed}, state) do
+    %{worker_sup: worker_sup,
+      workers: workers,
+      monitors: monitors,
+    } = state
+
+    IO.puts "EXIT: killed"
     case :ets.lookup(monitors, pid) do
       [{pid, ref}] ->
-        IO.puts "EXIT: lookup..."
+        IO.puts " -> live one got killed"
+        true = :ets.delete(monitors, pid)
+        pid = new_worker(worker_sup)
+        IO.puts("New worker created: #{inspect(pid)}")
+        true = :ets.insert(monitors, {pid, ref})
+        {:noreply, %{state | monitors: monitors}}
+      _ ->
+        IO.puts " -> dormant one got killed"
+        workers = workers -- [pid]
+        workers = [new_worker(worker_sup) | workers]
+        {:noreply, %{state | workers: workers}}
+    end
+  end
+
+  def handle_info({:EXIT, pid, :normal}, state = %{monitors: monitors}) do
+    IO.puts "EXIT: normal"
+    case :ets.lookup(monitors, pid) do
+      [{pid, ref}] ->
+        IO.puts " -> live one"
         true = Process.demonitor(ref)
         true = :ets.delete(monitors, pid)
         new_state = handle_worker_exit(pid, state)
         {:noreply, new_state}
       _ ->
-        IO.puts "EXIT"
+        IO.puts " -> what's going on?"
         {:noreply, state}
     end
   end
